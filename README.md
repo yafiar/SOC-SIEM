@@ -11,7 +11,7 @@
 ---
 
 
-## 📋 Deskripsi
+## Deskripsi
 
 Proyek ini mengimplementasikan sistem **Security Operations Center (SOC) otomatis** yang menggabungkan:
 
@@ -29,7 +29,7 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 
 ---
 
-## 🏗️ Arsitektur
+## Arsitektur
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -73,7 +73,7 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 
 ---
 
-## ⚙️ Instalasi
+## Instalasi
 
 ### Prasyarat
 
@@ -345,7 +345,7 @@ sudo nmap -sS -A 20.6.95.104
 
 ---
 
-## 🔥 Simulasi Serangan DDoS
+## Simulasi Serangan DDoS
 
 Target: `http://20.6.95.104/` (Nginx Web Server)
 
@@ -415,7 +415,7 @@ curl -v http://20.6.95.104/
 
 ---
 
-## 🗂️ Struktur Direktori
+## Struktur Direktori
 
 ```
 ~/Shuffle/
@@ -431,7 +431,7 @@ curl -v http://20.6.95.104/
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 | Masalah | Penyebab | Solusi |
 |---|---|---|
