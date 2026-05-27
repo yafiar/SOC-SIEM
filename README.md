@@ -10,21 +10,28 @@
 
 ---
 
-
 ## Deskripsi
 
 Proyek ini mengimplementasikan sistem **Security Operations Center (SOC) otomatis** yang menggabungkan:
 
 - **Wazuh** sebagai platform SIEM (Security Information and Event Management) untuk mendeteksi anomali traffic jaringan secara real-time
-- **Shuffle** sebagai platform SOAR (Security Orchestration, Automation and Response) untuk mengotomatisasi respons terhadap ancaman yang terdeteksi
+- **Wazuh Active Response** sebagai engine pemblokiran IP otomatis berbasis rules (built-in, tanpa install tambahan)
+- **n8n** sebagai platform SOAR (Security Orchestration, Automation and Response) untuk visualisasi dan orkestrasi alur respons insiden
 
-Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server Nginx), alert dikirim secara otomatis ke Shuffle melalui webhook. Shuffle kemudian mengorkestrasi alur respons: mengekstrak IP penyerang, (opsional) memperkaya data dengan threat intelligence, lalu memblokir IP tersebut melalui Wazuh Active Response menggunakan `firewall-drop`.
+Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server Nginx), Active Response langsung memblokir IP penyerang via `firewall-drop`. Secara paralel, alert dikirim ke n8n melalui webhook untuk divisualisasikan sebagai workflow otomasi.
+
+### Kenapa Kombinasi Ini?
+
+| Opsi | Keterangan |
+|---|---|
+| Wazuh Active Response saja | ✅ Stabil, instant, tapi tidak ada UI visual |
+| **Wazuh Active Response + n8n** | ✅ **Terbaik** — blocking nyata + UI workflow untuk presentasi |
 
 ### Tujuan Proyek
 
 - Memahami konsep SIEM dan SOAR dalam lingkungan SOC
-- Mengintegrasikan Wazuh dengan Shuffle secara end-to-end
-- Mengotomatisasi pemblokiran IP berbahaya tanpa intervensi manual
+- Mengimplementasikan respons otomatis pemblokiran IP berbahaya
+- Memvisualisasikan alur orkestrasi keamanan via n8n
 - Mensimulasikan serangan DDoS dan memverifikasi respons otomatis
 
 ---
@@ -32,34 +39,27 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 ## Arsitektur
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        AZURE VIRTUAL MACHINE                    │
-│                                                                 │
-│  ┌──────────────┐    webhook    ┌──────────────────────────────┐│
-│  │              │ ────────────► │         SHUFFLE SOAR         ││
-│  │    WAZUH     │               │                              ││
-│  │    SIEM      │ ◄──────────── │  [Webhook] → [Extract IP]    ││
-│  │              │  active resp  │       → [Wazuh API]          ││
-│  └──────┬───────┘               └──────────────────────────────┘│
-│         │ alert                                                 │
-│         ▼                                                       │
-│  ┌──────────────┐                                               │
-│  │  Wazuh Agent │  ◄──── Traffic Anomali / DDoS                 │
-│  │  (Nginx VM)  │                                               │
-│  │              │                                               │
-│  │  Nginx Web   │  http://20.6.95.104/                          │
-│  │  Server      │                                               │
-│  └──────────────┘                                               │
-└─────────────────────────────────────────────────────────────────┘
-
-         ▲
-         │ Simulasi Serangan DDoS
-         │
-┌────────────────┐
-│  Attacker VM   │
-│  (hping3/      │
-│   slowloris)   │
-└────────────────┘
+┌─────────────────────────┐        ┌──────────────────────────────────┐
+│   VM 1                  │        │   VM 2                           │
+│   70.153.18.130         │        │   20.6.95.104                    │
+│                         │        │                                  │
+│  ┌─────────────────┐    │ alert  │  ┌────────────┐  ┌────────────┐  │
+│  │   Wazuh SIEM    │◄───┼────────┼──│Wazuh Agent │  │   Nginx    │  │
+│  │   + Dashboard   │    │        │  └────────────┘  │ Web Server │  │
+│  └────────┬────────┘    │        │                  └────────────┘  │
+│           │             │        └──────────────────────┬───────────┘
+│    ┌──────┴──────┐      │                               │
+│    │             │      │  firewall-drop                │ HTTP traffic
+│    │  Active     │──────┼───────────────────────────────┘
+│    │  Response   │      │
+│    └──────┬──────┘      │
+│           │ webhook     │        ┌──────────────────────────────────┐
+│           ▼             │        │   VM 3 - Attacker                │
+│  ┌─────────────────┐    │        │                                  │
+│  │   n8n SOAR      │    │        │  hping3 / slowloris / ab / nmap  │
+│  │   :5678         │    │        │  ──────────────────────────────► │
+│  └─────────────────┘    │        │          20.6.95.104:80          │
+└─────────────────────────┘        └──────────────────────────────────┘
 ```
 
 ### Komponen Stack
@@ -67,8 +67,8 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 | Komponen | Tools | Port |
 |---|---|---|
 | SIEM | Wazuh Manager + Dashboard | 443, 9200, 55000 |
-| SOAR | Shuffle (Docker) | 3001 |
-| Database SOAR | OpenSearch (Docker) | 9201 |
+| Auto Block | Wazuh Active Response (firewall-drop) | built-in |
+| SOAR Visual | n8n (Docker) | 5678 |
 | Web Server Target | Nginx + Wazuh Agent | 80 |
 
 ---
@@ -77,19 +77,19 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 
 ### Prasyarat
 
-- 3x Azure VM Ubuntu 24.04 LTS
+- 3x Azure VM Ubuntu 22.04 LTS
 - Akses sudo/root di setiap VM
-- Port yang dibuka di Azure NSG sesuai tabel berikut:
+- Port yang dibuka di Azure NSG:
 
 | VM | Peran | Port yang Dibuka |
 |---|---|---|
-| VM 1 | Wazuh Dashboard + Shuffle SOAR | `22`, `443`, `3001`, `55000` |
+| VM 1 | Wazuh Dashboard + n8n SOAR | `22`, `443`, `5678`, `55000` |
 | VM 2 | Web Server (Nginx) + Wazuh Agent | `22`, `80` |
 | VM 3 | Attacker | `22` |
 
 ---
 
-## VM 1 — Wazuh Dashboard + Shuffle SOAR
+## VM 1 — Wazuh Dashboard + n8n SOAR
 
 > IP: `70.153.18.130`
 
@@ -101,7 +101,7 @@ Install Wazuh Manager, Indexer, dan Dashboard sekaligus:
 curl -sO https://packages.wazuh.com/4.14/wazuh-install.sh && sudo bash ./wazuh-install.sh -a
 ```
 
-Final Output:
+Simpan password yang muncul di akhir instalasi. Akses dashboard di:
 
 ```
 https://70.153.18.130
@@ -111,142 +111,171 @@ Password: <dari output instalasi>
 
 ---
 
-### 1.2 Instalasi Shuffle SOAR (Docker)
+### 1.2 Konfigurasi Wazuh Active Response
 
-**Pastikan Docker sudah berjalan:**
-
-```bash
-sudo systemctl start docker && sudo systemctl enable docker
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-**Clone dan konfigurasi Shuffle:**
-
-```bash
-git clone https://github.com/Shuffle/Shuffle
-cd Shuffle
-```
-
-**edit `docker-compose.yml` karena port 9200 sudah dipakai Wazuh Indexer:**
-
-```bash
-nano docker-compose.yml
-```
-
-Ubah port OpenSearch dari `9200:9200` menjadi `9201:9200`:
-
-```yaml
-opensearch:
-  ports:
-    - 9201:9200   # ubah dari 9200:9200
-```
-
-**Fix permission dan kernel setting sebelum start:**
-
-```bash
-sudo sysctl -w vm.max_map_count=262144
-echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
-sudo swapoff -a
-sudo chown -R 1000:1000 shuffle-database
-```
-
-**Jalankan Shuffle:**
-
-```bash
-docker-compose up -d
-```
-
-**Verifikasi semua container berjalan:**
-
-```bash
-docker ps
-```
-
-Output yang diharapkan:
-
-```
-shuffle-frontend    Up
-shuffle-backend     Up
-shuffle-orborus     Up
-shuffle-opensearch  Up
-```
-
-Akses Shuffle di: `http://70.153.18.130:3001`
-
----
-
-### 1.3 Buat Workflow di Shuffle
-
-1. Login ke Shuffle → **Automate → Workflows → + Create Workflow**
-2. Beri nama: `Wazuh Block Anomaly Traffic`
-3. Drag node **Webhook** dari panel Triggers ke workspace
-4. Rename webhook menjadi `Wazuh_alerts`
-5. Klik **Start** untuk mengaktifkan webhook
-6. **Copy Webhook URI** (contoh: `https://70.153.18.130:3001/api/v1/hooks/webhook_xxxx`)
-
-**Bangun chain workflow:**
-
-```
-[Webhook: Wazuh_alerts]
-        ↓
-[Tools: Regex — ekstrak $data.srcip]
-        ↓
-[HTTP POST: ambil Wazuh API token]
-        ↓
-[HTTP PUT: trigger firewall-drop via Wazuh API]
-```
-
-**Node HTTP — Ambil Token Wazuh:**
-- Method: `POST`
-- URL: `https://70.153.18.130:55000/security/user/authenticate`
-- Header: `Authorization: Basic <base64(admin:password)>`
-
-**Node HTTP — Blokir IP:**
-- Method: `PUT`
-- URL: `https://70.153.18.130:55000/active-response?agents_list=all`
-- Body:
-```json
-{
-  "command": "firewall-drop",
-  "arguments": ["-", "null", "$srcip", "null"]
-}
-```
-
----
-
-### 1.4 Konfigurasi Wazuh untuk Kirim Alert ke Shuffle
-
-**Edit ossec.conf di Wazuh Manager:**
+Active Response adalah fitur built-in Wazuh untuk memblokir IP otomatis tanpa tools tambahan.
 
 ```bash
 sudo nano /var/ossec/etc/ossec.conf
 ```
 
-Tambahkan di dalam blok `<ossec_config>`:
+Tambahkan sebelum `</ossec_config>`:
 
 ```xml
-<!-- Integrasi dengan Shuffle SOAR -->
+<!-- Active Response: blokir IP otomatis saat terdeteksi anomali -->
+<active-response>
+  <command>firewall-drop</command>
+  <location>local</location>
+  <level>7</level>
+  <timeout>600</timeout>
+</active-response>
+```
+
+Restart Wazuh Manager:
+
+```bash
+sudo systemctl restart wazuh-manager
+```
+
+---
+
+### 1.3 Instalasi n8n SOAR (Docker)
+
+**Lindungi SSH sebelum menjalankan Docker:**
+
+```bash
+sudo apt install iptables-persistent -y
+sudo iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT
+sudo netfilter-persistent save
+```
+
+**Cegah Docker mengacak iptables:**
+
+```bash
+sudo nano /etc/docker/daemon.json
+```
+
+```json
+{
+  "iptables": false
+}
+```
+
+```bash
+sudo systemctl restart docker
+```
+
+**Buka port n8n secara manual:**
+
+```bash
+sudo iptables -I INPUT 2 -p tcp --dport 5678 -j ACCEPT
+sudo netfilter-persistent save
+```
+
+**Pastikan user ada di grup docker:**
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+**Jalankan n8n:**
+
+```bash
+docker run -d \
+  --name n8n \
+  --restart unless-stopped \
+  -p 5678:5678 \
+  -e N8N_BASIC_AUTH_ACTIVE=true \
+  -e N8N_BASIC_AUTH_USER=admin \
+  -e N8N_BASIC_AUTH_PASSWORD=admin123 \
+  -v n8n_data:/home/node/.n8n \
+  n8nio/n8n
+```
+
+Verifikasi berjalan:
+
+```bash
+docker ps | grep n8n
+```
+
+Akses n8n di: `http://70.153.18.130:5678`
+
+---
+
+### 1.4 Buat Workflow di n8n
+
+1. Login ke n8n → **+ New Workflow**, beri nama `Wazuh Block IP`
+2. Tambah node **Webhook**:
+   - HTTP Method: `POST`
+   - Path: `wazuh-alert`
+   - Klik **Listen for Test Event**
+3. Copy webhook URL:
+   ```
+   http://70.153.18.130:5678/webhook/wazuh-alert
+   ```
+
+**Bangun chain workflow:**
+
+```
+[Webhook: wazuh-alert]
+        ↓
+[Code: Extract src IP]
+        ↓
+[HTTP Request: Get Wazuh Token]
+        ↓
+[HTTP Request: firewall-drop via Wazuh API]
+```
+
+**Node Code — Extract IP:**
+
+```javascript
+const alert = $input.first().json;
+const srcIP = alert?.data?.srcip || alert?.data?.src_ip || null;
+return [{ json: { srcip: srcIP, rule: alert?.rule?.description } }];
+```
+
+**Node HTTP — Ambil Token Wazuh:**
+- Method: `POST`
+- URL: `https://70.153.18.130:55000/security/user/authenticate`
+- Auth: Basic Auth → `admin` / `<password_wazuh>`
+- SSL Verify: `false` (untuk lab)
+
+**Node HTTP — Blokir IP:**
+- Method: `PUT`
+- URL: `https://70.153.18.130:55000/active-response?agents_list=all`
+- Header: `Authorization: Bearer {{ $node["Get Wazuh Token"].json.data.token }}`
+- Body (JSON):
+```json
+{
+  "command": "firewall-drop",
+  "arguments": ["-", "null", "{{ $node['Extract IP'].json.srcip }}", "null"]
+}
+```
+
+Klik toggle **Inactive → Active** di pojok kanan atas.
+
+---
+
+### 1.5 Konfigurasi Wazuh Kirim Alert ke n8n
+
+```bash
+sudo nano /var/ossec/etc/ossec.conf
+```
+
+Tambahkan sebelum `</ossec_config>`:
+
+```xml
+<!-- Integrasi dengan n8n SOAR -->
 <integration>
-  <name>shuffle</name>
-  <hook_url>https://70.153.18.130:3001/api/v1/hooks/<WEBHOOK_ID></hook_url>
+  <name>custom-n8n</name>
+  <hook_url>http://70.153.18.130:5678/webhook/wazuh-alert</hook_url>
   <level>7</level>
   <alert_format>json</alert_format>
 </integration>
 ```
 
-**Tambahkan Active Response untuk memblokir IP:**
-
-```xml
-<active-response>
-  <command>firewall-drop</command>
-  <location>local</location>
-  <rules_id>31151,31152</rules_id>
-  <timeout>no</timeout>
-</active-response>
-```
-
-**Restart Wazuh Manager:**
+Restart Wazuh:
 
 ```bash
 sudo systemctl restart wazuh-manager
@@ -270,8 +299,6 @@ sudo systemctl enable nginx && sudo systemctl start nginx
 ```bash
 sudo nano /var/www/html/index.html
 ```
-
-Isi dengan konten berikut:
 
 ```html
 <!DOCTYPE html>
@@ -303,11 +330,17 @@ sudo systemctl enable wazuh-agent
 sudo systemctl start wazuh-agent
 ```
 
+**Verifikasi agent terdaftar** (dari VM 1):
+
+```bash
+sudo /var/ossec/bin/agent_control -l
+```
 
 ---
 
 ## VM 3 — Attacker
 
+> VM terpisah, bukan bagian dari infrastruktur monitoring
 
 ### 3.1 Instalasi Tools Serangan
 
@@ -345,72 +378,68 @@ sudo nmap -sS -A 20.6.95.104
 
 ---
 
-## Simulasi Serangan DDoS
-
-Target: `http://20.6.95.104/` (Nginx Web Server)
-
-### Metode 1 — hping3 (SYN Flood)
-
-```bash
-# Install hping3
-sudo apt install hping3 -y
-
-# Kirim SYN flood ke port 80
-sudo hping3 -S --flood -V -p 80 20.6.95.104
-```
-
-### Metode 2 — Slowloris (HTTP Slow Attack)
-
-```bash
-# Install slowloris
-pip3 install slowloris
-
-# Jalankan serangan
-slowloris 20.6.95.104 -p 80 -s 500
-```
-
-### Metode 3 — Apache Benchmark (HTTP Flood)
-
-```bash
-# Kirim 10000 request dengan 100 concurrent
-ab -n 10000 -c 100 http://20.6.95.104/
-```
-
-### Metode 4 — Nmap Port Scan (Memicu Rules Wazuh)
-
-```bash
-sudo apt install nmap -y
-sudo nmap -sS -A 20.6.95.104
-```
-
----
-
 ## Verifikasi Respons Otomatis
 
-**1. Cek alert di Wazuh Dashboard:**
-- Buka `https://<IP_VM>` → **Security Events**
-- Filter berdasarkan rule group: `web` atau `syscheck`
+### 1. Cek Alert di Wazuh Dashboard
+
+- Buka `https://70.153.18.130` → **Security Events**
+- Filter rule group: `web` atau `syscheck`
 - Pastikan alert dengan level ≥ 7 muncul
 
-**2. Cek workflow Shuffle terpicu:**
-- Buka Shuffle → Workflow → klik **Executions**
-- Setiap eksekusi menunjukkan langkah-langkah yang berhasil dijalankan
-
-**3. Verifikasi IP terblokir di firewall:**
+### 2. Cek Log Active Response (VM 1)
 
 ```bash
-# Di mesin Wazuh Agent / Nginx server
-sudo iptables -L INPUT -n | grep <IP_ATTACKER>
-
-# Output yang diharapkan:
-# DROP  tcp  -- <IP_ATTACKER>  0.0.0.0/0
+sudo tail -f /var/ossec/logs/active-responses.log
 ```
 
-**4. Test koneksi dari attacker (seharusnya gagal):**
+Output yang diharapkan:
+```
+firewall-drop add - <IP_ATTACKER> 1234 31151
+```
+
+### 3. Verifikasi IP Terblokir di Firewall (VM 2)
+
+```bash
+sudo iptables -L INPUT -n --line-numbers
+```
+
+Kalau berhasil diblokir:
+```
+Chain INPUT (policy ACCEPT)
+num  target  prot  opt  source          destination
+1    DROP    all   --   <IP_ATTACKER>   0.0.0.0/0
+```
+
+Cek spesifik IP:
+```bash
+sudo iptables -L INPUT -n | grep <IP_ATTACKER>
+```
+
+### 4. Cek Workflow n8n Terpicu
+
+- Buka `http://70.153.18.130:5678`
+- Workflow → klik **Executions**
+- Setiap eksekusi menunjukkan langkah yang berhasil dijalankan
+
+### 5. Test Koneksi dari Attacker (VM 3)
 
 ```bash
 curl -v http://20.6.95.104/
-# Expected: connection timeout atau connection refused
+# Expected: connection timeout
+
+ping 20.6.95.104
+# Expected: 100% packet loss
+```
+
+### Cara Unblock IP (Reset untuk Testing Ulang)
+
+```bash
+# Di VM 2
+sudo iptables -L INPUT -n --line-numbers
+sudo iptables -D INPUT <nomor_rule>
+
+# Atau langsung berdasarkan IP
+sudo iptables -D INPUT -s <IP_ATTACKER> -j DROP
 ```
 
 ---
@@ -418,15 +447,14 @@ curl -v http://20.6.95.104/
 ## Struktur Direktori
 
 ```
-~/Shuffle/
-├── docker-compose.yml      # Konfigurasi Docker Shuffle
-├── shuffle-database/       # Data persistent OpenSearch
-└── .env                    # Environment variables
-
 /var/ossec/etc/
-├── ossec.conf              # Konfigurasi utama Wazuh
+├── ossec.conf              # Konfigurasi Wazuh + Active Response + integrasi n8n
 └── rules/
     └── local_rules.xml     # Custom rules (opsional)
+
+/var/ossec/logs/
+├── alerts/alerts.log       # Log semua alert
+└── active-responses.log    # Log IP yang diblokir Active Response
 ```
 
 ---
@@ -435,21 +463,22 @@ curl -v http://20.6.95.104/
 
 | Masalah | Penyebab | Solusi |
 |---|---|---|
-| `Permission denied` saat `docker-compose up` | User tidak di grup docker | `sudo usermod -aG docker $USER && newgrp docker` |
-| Port 9200 bentrok | Wazuh Indexer sudah pakai 9200 | Ubah ke `9201:9200` di docker-compose.yml |
-| `vm.max_map_count too low` | Kernel limit terlalu rendah | `sudo sysctl -w vm.max_map_count=262144` |
-| Shuffle backend tidak connect ke DB | OpenSearch crash | `sudo chown -R 1000:1000 shuffle-database && sudo swapoff -a` |
-| SSH putus setelah docker-compose up | Docker mereset iptables | `sudo iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT` |
-| Alert tidak masuk ke Shuffle | Webhook tidak aktif / URL salah | Pastikan webhook di-**Start** dan URL di ossec.conf benar |
+| `Permission denied` saat docker run | User tidak di grup docker | `sudo usermod -aG docker $USER && newgrp docker` |
+| SSH putus setelah Docker jalan | Docker reset iptables | `sudo iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT` |
+| Active Response tidak memblokir | Level rule terlalu tinggi | Turunkan `<level>` di ossec.conf atau cek rule ID |
+| Alert tidak masuk ke n8n | Webhook tidak aktif | Pastikan workflow n8n di-toggle **Active** |
+| n8n tidak bisa diakses | Port 5678 belum dibuka | Buka di Azure NSG + `iptables -I INPUT -p tcp --dport 5678 -j ACCEPT` |
+| Wazuh manager gagal restart | Syntax error ossec.conf | `sudo /var/ossec/bin/wazuh-logtest` untuk cek config |
 
 ---
 
-## Referensi
- 
+## 📚 Referensi
+
 - [Wazuh Official Documentation](https://documentation.wazuh.com)
-- [Shuffle SOAR GitHub](https://github.com/Shuffle/Shuffle)
-- [Wazuh + Shuffle Integration Guide](https://wazuh.com/blog/integrating-wazuh-with-shuffle/)
 - [Wazuh Active Response](https://documentation.wazuh.com/current/user-manual/capabilities/active-response/)
-- [Wazuh & Shuffle Partnership Announcement](https://wazuh.com/blog/wazuh-and-shuffle-announce-technology-partnership-to-deliver-integrated-security-automation/)
+- [n8n Documentation](https://docs.n8n.io)
+- [n8n Docker Install](https://docs.n8n.io/hosting/installation/docker/)
+- [Wazuh API Reference](https://documentation.wazuh.com/current/user-manual/api/reference.html)
 
 ---
+
