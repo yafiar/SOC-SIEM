@@ -443,3 +443,13 @@ curl -v http://20.6.95.104/
 | Alert tidak masuk ke Shuffle | Webhook tidak aktif / URL salah | Pastikan webhook di-**Start** dan URL di ossec.conf benar |
 
 ---
+
+## Referensi
+ 
+- [Wazuh Official Documentation](https://documentation.wazuh.com)
+- [Shuffle SOAR GitHub](https://github.com/Shuffle/Shuffle)
+- [Wazuh + Shuffle Integration Guide](https://wazuh.com/blog/integrating-wazuh-with-shuffle/)
+- [Wazuh Active Response](https://documentation.wazuh.com/current/user-manual/capabilities/active-response/)
+- [Wazuh & Shuffle Partnership Announcement](https://wazuh.com/blog/wazuh-and-shuffle-announce-technology-partnership-to-deliver-integrated-security-automation/)
+
+---
