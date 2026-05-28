@@ -16,7 +16,6 @@ Proyek ini mengimplementasikan sistem **Security Operations Center (SOC) otomati
 
 - **Wazuh** sebagai platform SIEM (Security Information and Event Management) untuk mendeteksi anomali traffic jaringan secara real-time
 - **Wazuh Active Response** sebagai engine pemblokiran IP otomatis berbasis rules (built-in, tanpa install tambahan)
-- **n8n** sebagai platform SOAR (Security Orchestration, Automation and Response) untuk visualisasi dan orkestrasi alur respons insiden
 
 Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server Nginx), Active Response langsung memblokir IP penyerang via `firewall-drop`. Secara paralel, alert dikirim ke n8n melalui webhook untuk divisualisasikan sebagai workflow otomasi.
 
@@ -25,7 +24,6 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 | Opsi | Keterangan |
 |---|---|
 | Wazuh Active Response saja | ✅ Stabil, instant, tapi tidak ada UI visual |
-| **Wazuh Active Response + n8n** | ✅ **Terbaik** — blocking nyata + UI workflow untuk presentasi |
 
 ### Tujuan Proyek
 
@@ -68,7 +66,6 @@ Ketika Wazuh mendeteksi traffic anomali (seperti serangan DDoS pada web server N
 |---|---|---|
 | SIEM | Wazuh Manager + Dashboard | 443, 9200, 55000 |
 | Auto Block | Wazuh Active Response (firewall-drop) | built-in |
-| SOAR Visual | n8n (Docker) | 5678 |
 | Web Server Target | Nginx + Wazuh Agent | 80 |
 
 ---
@@ -132,150 +129,6 @@ Tambahkan sebelum `</ossec_config>`:
 ```
 
 Restart Wazuh Manager:
-
-```bash
-sudo systemctl restart wazuh-manager
-```
-
----
-
-### 1.3 Instalasi n8n SOAR (Docker)
-
-**Lindungi SSH sebelum menjalankan Docker:**
-
-```bash
-sudo apt install iptables-persistent -y
-sudo iptables -I INPUT 1 -p tcp --dport 22 -j ACCEPT
-sudo netfilter-persistent save
-```
-
-**Cegah Docker mengacak iptables:**
-
-```bash
-sudo nano /etc/docker/daemon.json
-```
-
-```json
-{
-  "iptables": false
-}
-```
-
-```bash
-sudo systemctl restart docker
-```
-
-**Buka port n8n secara manual:**
-
-```bash
-sudo iptables -I INPUT 2 -p tcp --dport 5678 -j ACCEPT
-sudo netfilter-persistent save
-```
-
-**Pastikan user ada di grup docker:**
-
-```bash
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-**Jalankan n8n:**
-
-```bash
-docker run -d \
-  --name n8n \
-  --restart unless-stopped \
-  -p 5678:5678 \
-  -e N8N_BASIC_AUTH_ACTIVE=true \
-  -e N8N_BASIC_AUTH_USER=admin \
-  -e N8N_BASIC_AUTH_PASSWORD=admin123 \
-  -v n8n_data:/home/node/.n8n \
-  n8nio/n8n
-```
-
-Verifikasi berjalan:
-
-```bash
-docker ps | grep n8n
-```
-
-Akses n8n di: `http://70.153.18.130:5678`
-
----
-
-### 1.4 Buat Workflow di n8n
-
-1. Login ke n8n → **+ New Workflow**, beri nama `Wazuh Block IP`
-2. Tambah node **Webhook**:
-   - HTTP Method: `POST`
-   - Path: `wazuh-alert`
-   - Klik **Listen for Test Event**
-3. Copy webhook URL:
-   ```
-   http://70.153.18.130:5678/webhook/wazuh-alert
-   ```
-
-**Bangun chain workflow:**
-
-```
-[Webhook: wazuh-alert]
-        ↓
-[Code: Extract src IP]
-        ↓
-[HTTP Request: Get Wazuh Token]
-        ↓
-[HTTP Request: firewall-drop via Wazuh API]
-```
-
-**Node Code — Extract IP:**
-
-```javascript
-const alert = $input.first().json;
-const srcIP = alert?.data?.srcip || alert?.data?.src_ip || null;
-return [{ json: { srcip: srcIP, rule: alert?.rule?.description } }];
-```
-
-**Node HTTP — Ambil Token Wazuh:**
-- Method: `POST`
-- URL: `https://70.153.18.130:55000/security/user/authenticate`
-- Auth: Basic Auth → `admin` / `<password_wazuh>`
-- SSL Verify: `false` (untuk lab)
-
-**Node HTTP — Blokir IP:**
-- Method: `PUT`
-- URL: `https://70.153.18.130:55000/active-response?agents_list=all`
-- Header: `Authorization: Bearer {{ $node["Get Wazuh Token"].json.data.token }}`
-- Body (JSON):
-```json
-{
-  "command": "firewall-drop",
-  "arguments": ["-", "null", "{{ $node['Extract IP'].json.srcip }}", "null"]
-}
-```
-
-Klik toggle **Inactive → Active** di pojok kanan atas.
-
----
-
-### 1.5 Konfigurasi Wazuh Kirim Alert ke n8n
-
-```bash
-sudo nano /var/ossec/etc/ossec.conf
-```
-
-Tambahkan sebelum `</ossec_config>`:
-
-```xml
-<!-- Integrasi dengan n8n SOAR -->
-<integration>
-  <name>custom-n8n</name>
-  <hook_url>http://70.153.18.130:5678/webhook/wazuh-alert</hook_url>
-  <level>7</level>
-  <alert_format>json</alert_format>
-</integration>
-```
-
-Restart Wazuh:
 
 ```bash
 sudo systemctl restart wazuh-manager
